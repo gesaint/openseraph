@@ -1,0 +1,315 @@
+apiVersion: v2
+
+# 工作流名字
+name: "boot_transaction"
+
+# 全局输入参数
+inputField:
+  - "tenantid"
+  - "token"
+  - "workflow_id"
+  - "server"
+  - "volumes"
+
+# 要执行的任务流
+tasks:
+  - name: "create_instances"
+    action: "nova.create_instances"
+    txn: "justatest"
+    sync-response: true
+    params:
+      "workflow_id": "{{ .workflow_id }}"
+      "auth":
+        "tenantid": "{{ .tenantid }}"
+        "token": "{{ .token }}"
+      "volumes_body": "{{ .volumes }}"
+      "server_body": "{{ .server }}"
+    on-success:
+      - on-if:
+          ne:
+            - "{{ .volumes }}"
+            - "null"
+          runs:
+            - "create_volumes"
+      - on-if:
+          eq:
+            - "{{ .volumes }}"
+            - "null"
+          runs:
+            - "check_create_only_instance_status"
+      - "send_unimq_create_instances_start"
+    on-error:
+      - "send_unimq_all_run_instance_failed"
+
+  - name: "create_volumes"
+    action: "nova.create_volumes"
+    get-parent: true
+    foreach: "{{ .parent_result.data.instances }}"
+    txn: "{{ .each_one }}"
+    params:
+      "workflow_id": "{{ .workflow_id }}"
+      "auth":
+        "tenantid": "{{ .tenantid }}"
+        "token": "{{ .token }}"
+      "instance_uuid": "{{ .each_one }}"
+      "volumes_body": "{{ .volumes }}"
+    on-success:
+      - "send_unimq_create_volumes_start"
+      - "check_create_instance_status"
+    on-error:
+      - "send_unimq_run_instance_failed"
+      - "reset_instance_status_to_error"
+      - "force_delete_volumes"
+
+  - name: "check_create_instance_status"
+    action: "nova.check_create_instance_status"
+    get-parent: true
+    params:
+      "instance_uuid": "{{ .each_one }}"
+      "volumes": "{{ .parent_result.data.volumes }}"
+    on-success:
+      - "send_unimq_create_instance_success"
+      - "check_create_volumes_status"
+    on-error:
+      - "send_unimq_run_instance_failed"
+      - "reset_instance_status_to_error"
+      - "force_delete_volumes"
+
+  - name: "check_create_only_instance_status"
+    action: "nova.check_create_only_instance_status"
+    get-parent: true
+    foreach: "{{ .parent_result.data.instances }}"
+    params:
+      "instance_uuid": "{{ .each_one }}"
+    on-success:
+      - "send_unimq_run_instance_success"
+    on-error:
+      - "send_unimq_run_instance_failed"
+      - "reset_instance_status_to_error"
+
+  - name: "check_create_volumes_status"
+    action: "nova.check_create_volumes_status"
+    get-parent: true
+    params:
+      "instance_uuid": "{{ .each_one }}"
+      "volumes": "{{ .parent_result.data.volumes }}"
+    on-success:
+      - "send_unimq_create_volumes_success"
+      - "attach_volumes"
+    on-error:
+      - "send_unimq_run_instance_failed"
+      - "reset_instance_status_to_error"
+      - "delete_volumes"
+
+  - name: "attach_volumes"
+    action: "nova.attach_volumes"
+    get-parent: true
+    params:
+      "workflow_id": "{{ .workflow_id }}"
+      "auth":
+        "tenantid": "{{ .tenantid }}"
+        "token": "{{ .token }}"
+      "instance_uuid": "{{ .each_one }}"
+      "volumes": "{{ .parent_result.data.volumes }}"
+    on-success:
+      - "send_unimq_attach_volumes_start"
+      - "check_attach_volumes_status"
+    on-error:
+      - "send_unimq_run_instance_failed"
+      - "reset_instance_status_to_error"
+      - "delete_volumes"
+
+  - name: "check_attach_volumes_status"
+    action: "nova.check_attach_volumes_status"
+    get-parent: true
+    params:
+      "instance_uuid": "{{ .each_one }}"
+      "volumes": "{{ .parent_result.data.volumes }}"
+    on-success:
+      - "send_unimq_attach_volumes_success"
+      - "check_power_on_instance_status"
+    on-error:
+      - "send_unimq_run_instance_failed"
+      - "reset_instance_status_to_error"
+      - "detach_volumes"
+
+  - name: "check_power_on_instance_status"
+    action: "nova.check_power_on_instance_status"
+    get-parent: true
+    params:
+      "instance_uuid": "{{ .each_one }}"
+      "volumes": "{{ .parent_result.data.volumes }}"
+    on-success:
+      - "send_unimq_run_instance_success"
+    on-error:
+      - "send_unimq_run_instance_failed"
+      - "reset_instance_status_to_error"
+      - "detach_volumes"
+
+  - name: "reset_instance_status_to_error"
+    action: "nova.reset_instance_status_to_error"
+    params:
+      "workflow_id": "{{ .workflow_id }}"
+      "auth":
+        "tenantid": "{{ .tenantid }}"
+        "token": "{{ .token }}"
+      "instance_uuid": "{{ .each_one }}"
+
+  - name: "detach_volumes"
+    action: "nova.detach_volumes"
+    get-parent: true
+    params:
+      "workflow_id": "{{ .workflow_id }}"
+      "auth":
+        "tenantid": "{{ .tenantid }}"
+        "token": "{{ .token }}"
+      "instance_uuid": "{{ .each_one }}"
+      "volumes": "{{ .parent_result.data.volumes }}"
+    on-success:
+      - "delete_volumes"
+
+  - name: "delete_volumes"
+    action: "nova.delete_volumes"
+    get-parent: true
+    params:
+      "workflow_id": "{{ .workflow_id }}"
+      "auth":
+        "tenantid": "{{ .tenantid }}"
+        "token": "{{ .token }}"
+      "instance_uuid": "{{ .each_one }}"
+      "volumes": "{{ .parent_result.data.volumes }}"
+
+  - name: "force_delete_volumes"
+    action: "nova.force_delete_volumes"
+    get-parent: true
+    params:
+      "workflow_id": "{{ .workflow_id }}"
+      "auth":
+        "tenantid": "{{ .tenantid }}"
+        "token": "{{ .token }}"
+      "instance_uuid": "{{ .each_one }}"
+      "volumes": "{{ .parent_result.data.volumes }}"
+
+  - name: "send_unimq_create_instances_start"
+    action: "nova.send_unimq"
+    get-parent: true
+    params:
+      "auth":
+        "tenantid": "{{ .tenantid }}"
+        "token": "{{ .token }}"
+      "body":
+        "workflow_id": "{{ .workflow_id }}"
+        "name": "wf-create-instances"
+        "status": "start"
+        "instance_uuids": "{{ .parent_result.data.instances }}"
+
+  - name: "send_unimq_all_run_instance_failed"
+    action: "nova.send_unimq"
+    get-parent: true
+    params:
+      "auth":
+        "tenantid": "{{ .tenantid }}"
+        "token": "{{ .token }}"
+      "body":
+        "workflow_id": "{{ .workflow_id }}"
+        "name": "wf-all-run-instance"
+        "status": "failed"
+        "msg": "{{ .parent_result }}"
+
+  - name: "send_unimq_create_volumes_start"
+    action: "nova.send_unimq"
+    get-parent: true
+    params:
+      "auth":
+        "tenantid": "{{ .tenantid }}"
+        "token": "{{ .token }}"
+      "body":
+        "workflow_id": "{{ .workflow_id }}"
+        "name": "wf-create-volumes"
+        "status": "start"
+        "instance_uuid": "{{ .each_one }}"
+        "volumes": "{{ .parent_result.data.volumes }}"
+
+  - name: "send_unimq_create_instance_success"
+    action: "nova.send_unimq"
+    get-parent: true
+    params:
+      "auth":
+        "tenantid": "{{ .tenantid }}"
+        "token": "{{ .token }}"
+      "body":
+        "workflow_id": "{{ .workflow_id }}"
+        "name": "wf-create-instance"
+        "status": "success"
+        "instance_uuid": "{{ .each_one }}"
+        "msg": "{{ .parent_result }}"
+
+  - name: "send_unimq_create_volumes_success"
+    action: "nova.send_unimq"
+    get-parent: true
+    params:
+      "auth":
+        "tenantid": "{{ .tenantid }}"
+        "token": "{{ .token }}"
+      "body":
+        "workflow_id": "{{ .workflow_id }}"
+        "name": "wf-create-volumes"
+        "status": "success"
+        "instance_uuid": "{{ .each_one }}"
+        "msg": "{{ .parent_result }}"
+
+  - name: "send_unimq_attach_volumes_start"
+    action: "nova.send_unimq"
+    get-parent: true
+    params:
+      "auth":
+        "tenantid": "{{ .tenantid }}"
+        "token": "{{ .token }}"
+      "body":
+        "workflow_id": "{{ .workflow_id }}"
+        "name": "wf-attach-volumes"
+        "status": "start"
+        "instance_uuid": "{{ .each_one }}"
+        "msg": "{{ .parent_result }}"
+
+  - name: "send_unimq_attach_volumes_success"
+    action: "nova.send_unimq"
+    get-parent: true
+    params:
+      "auth":
+        "tenantid": "{{ .tenantid }}"
+        "token": "{{ .token }}"
+      "body":
+        "workflow_id": "{{ .workflow_id }}"
+        "name": "wf-attach-volumes"
+        "status": "success"
+        "instance_uuid": "{{ .each_one }}"
+        "msg": "{{ .parent_result }}"
+
+  - name: "send_unimq_run_instance_failed"
+    action: "nova.send_unimq"
+    get-parent: true
+    params:
+      "auth":
+        "tenantid": "{{ .tenantid }}"
+        "token": "{{ .token }}"
+      "body":
+        "workflow_id": "{{ .workflow_id }}"
+        "name": "wf-run-instance"
+        "status": "failed"
+        "instance_uuid": "{{ .each_one }}"
+        "msg": "{{ .parent_result }}"
+
+  - name: "send_unimq_run_instance_success"
+    action: "nova.send_unimq"
+    get-parent: true
+    params:
+      "auth":
+        "tenantid": "{{ .tenantid }}"
+        "token": "{{ .token }}"
+      "body":
+        "workflow_id": "{{ .workflow_id }}"
+        "name": "wf-run-instance"
+        "status": "success"
+        "instance_uuid": "{{ .each_one }}"
+        "msg": "{{ .parent_result }}"
